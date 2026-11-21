@@ -18,30 +18,139 @@
 'use strict';
 (() => {
 const $=id=>document.getElementById(id), canvas=$('canvas'), ctx=canvas.getContext('2d');
-let width=400,height=430,state='ready',distance=0,speed=20,best=0,lane=1,playerX=0,obstacles=[],spawn=0,clock=0,last=0,roadOffset=0,audio=null,sound=false,crashKind='';
+let width=400,height=430,state='ready',distance=0,speed=20,best=0,lane=1,playerX=0,obstacles=[],spawn=0,clock=0,last=0,roadOffset=0,crashKind='';
 try{best=Number(localStorage.getItem('rickshaw-best'))||0}catch(e){} $('best').textContent=String(best).padStart(4,'0');
 const laneX=n=>width*(.2+n*.3), playerY=()=>height-66;
 function resize(){const r=$('road').getBoundingClientRect();width=r.width;height=r.height;const dpr=Math.min(window.devicePixelRatio||1,2);canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);playerX=laneX(lane)}
 window.addEventListener('resize',resize);resize();
-function beep(freq,duration=.08){if(!sound)return;try{audio=audio||new(window.AudioContext||window.webkitAudioContext)();audio.resume();const o=audio.createOscillator(),g=audio.createGain();o.connect(g);g.connect(audio.destination);o.frequency.value=freq;g.gain.setValueAtTime(.045,audio.currentTime);g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+duration);o.start();o.stop(audio.currentTime+duration)}catch(e){}}
+// Synthesized locally: no downloads, native bridge, or audio-file permissions.
+const gameAudio = (() => {
+  let context, master, motor, overtone, motorGain;
+  let enabled = true, unavailable = false, backgrounded = false;
+  const effects = new Set();
+  try { enabled = localStorage.getItem('rickshaw-sound') !== 'off'; } catch (_) {}
+  const button = $('sound');
+
+  function ui() {
+    const playing = enabled && context?.state === 'running' && !backgrounded;
+    button.textContent = unavailable ? 'AUDIO UNAVAILABLE' : !enabled ? 'SOUND OFF ♩' : playing ? 'SOUND ON ♫' : 'TAP FOR SOUND ♫';
+    button.setAttribute('aria-pressed', String(playing));
+    button.title = unavailable ? 'This WebView has no Web Audio support. Update Android System WebView.' : 'Phone-er media volume barano ache ki na check koro. Tap to mute or enable sound.';
+  }
+
+  function update() {
+    if (!context) return;
+    const active = enabled && context.state === 'running' && !backgrounded;
+    master.gain.setTargetAtTime(active ? .8 : 0, context.currentTime, .012);
+    motorGain.gain.setTargetAtTime(active && state === 'running' ? .13 : 0, context.currentTime, .025);
+    motor.frequency.setTargetAtTime(65 + speed * 1.7, context.currentTime, .08);
+    overtone.frequency.setTargetAtTime(130 + speed * 3.4, context.currentTime, .08);
+  }
+
+  async function unlock() {
+    if (!enabled || backgrounded) return false;
+    try {
+      if (!context) {
+        const Audio = window.AudioContext || window.webkitAudioContext;
+        if (!Audio) throw new Error('Web Audio unavailable');
+        context = new Audio();
+        master = context.createGain();
+        master.gain.value = 0;
+        master.connect(context.destination);
+        motorGain = context.createGain();
+        motorGain.gain.value = 0;
+        motorGain.connect(master);
+        motor = context.createOscillator();
+        motor.type = 'triangle';
+        motor.connect(motorGain);
+        motor.start();
+        overtone = context.createOscillator();
+        overtone.type = 'sine';
+        const quieter = context.createGain();
+        quieter.gain.value = .3;
+        overtone.connect(quieter);
+        quieter.connect(motorGain);
+        overtone.start();
+        context.onstatechange = () => { update(); ui(); };
+      }
+      // Call resume directly inside the tap handler, then wait before scheduling tones.
+      if (context.state !== 'running') await context.resume();
+      unavailable = false;
+      update();
+      ui();
+      return enabled && context.state === 'running' && !backgrounded;
+    } catch (_) {
+      // A denied resume is retryable with another tap; do not falsely show SOUND ON.
+      unavailable = !(window.AudioContext || window.webkitAudioContext);
+      ui();
+      return false;
+    }
+  }
+
+  function tone(frequency, duration = .12, endFrequency = frequency) {
+    if (!enabled || backgrounded || context?.state !== 'running') return;
+    const oscillator = context.createOscillator(), gain = context.createGain();
+    const time = context.currentTime;
+    oscillator.type = 'triangle';
+    oscillator.frequency.setValueAtTime(frequency, time);
+    oscillator.frequency.exponentialRampToValueAtTime(endFrequency, time + duration);
+    gain.gain.setValueAtTime(.001, time);
+    gain.gain.exponentialRampToValueAtTime(.3, time + .012);
+    gain.gain.exponentialRampToValueAtTime(.001, time + duration);
+    oscillator.connect(gain);
+    gain.connect(master);
+    effects.add(oscillator);
+    oscillator.onended = () => { effects.delete(oscillator); oscillator.disconnect(); gain.disconnect(); };
+    oscillator.start(time);
+    oscillator.stop(time + duration + .02);
+  }
+
+  function hush() {
+    for (const oscillator of effects) { try { oscillator.stop(); } catch (_) {} }
+    effects.clear();
+    update();
+  }
+
+  button.onclick = async () => {
+    if (enabled && context?.state === 'running' && !backgrounded) {
+      enabled = false;
+      hush();
+    } else {
+      enabled = true;
+      if (await unlock()) tone(660, .2, 880);
+    }
+    try { localStorage.setItem('rickshaw-sound', enabled ? 'on' : 'off'); } catch (_) {}
+    update();
+    ui();
+  };
+  ui();
+  return {
+    unlock, update, tone, hush,
+    background(value) { backgrounded = value; if (value) hush(); else update(); ui(); }
+  };
+})();
+
 function updateHUD(){$('score').textContent=String(Math.floor(distance)).padStart(4,'0');$('speed').textContent=Math.floor(speed)}
-function start(){distance=0;speed=20;lane=1;playerX=laneX(1);obstacles=[];spawn=.9;clock=0;crashKind='';state='running';$('overlay').hidden=true;$('pause').textContent='Ⅱ';$('pause').setAttribute('aria-label','Pause game');updateHUD();beep(450)}
-function steer(dir){if(state!=='running')return;const next=Math.max(0,Math.min(2,lane+dir));if(next!==lane){lane=next;beep(260)}}
-function finish(brake=false){if(state!=='running')return;state='over';crashKind=brake?'brake':'traffic';if(brake)obstacles.push({lane,x:playerX,y:playerY()+8,type:'hole'});const score=Math.floor(distance),record=score>best;if(record){best=score;try{localStorage.setItem('rickshaw-best',String(best))}catch(e){}}$('best').textContent=String(best).padStart(4,'0');$('pill').textContent=record?'NEW PERSONAL BEST!':'RIDE OVER';$('hero').textContent=brake?'↓':'×';$('title').innerHTML=brake?'Brake chapla?<br><span>Gorte porla!</span>':'Oof! Dhakka!<br><span>Abar hobe?</span>';$('message').textContent=brake?'Bolsilam brake chepo na! Ebar shudhu left-right.':'Traffic eriye chalao. Arekbar try koro!';$('result').hidden=false;$('result').textContent=String(score).padStart(4,'0')+' POINTS';$('play').textContent='ABAR CHALAO ↗';$('overlay').hidden=false;beep(80,.35)}
-function pause(){if(state==='running'){state='paused';$('pill').textContent='TAKE A BREATHER';$('hero').textContent='Ⅱ';$('title').innerHTML='Ektu break.<br><span>Brake na!</span>';$('message').textContent='Tomar ride ekhanei ache. Ready hole abar chalao.';$('result').hidden=true;$('play').textContent='CONTINUE RIDE ↗';$('overlay').hidden=false;$('pause').textContent='▶';$('pause').setAttribute('aria-label','Resume game')}else if(state==='paused'){state='running';$('overlay').hidden=true;$('pause').textContent='Ⅱ';$('pause').setAttribute('aria-label','Pause game')}}
+function start(){distance=0;speed=20;lane=1;playerX=laneX(1);obstacles=[];spawn=.9;clock=0;crashKind='';state='running';$('overlay').hidden=true;$('pause').textContent='Ⅱ';$('pause').setAttribute('aria-label','Pause game');updateHUD();gameAudio.unlock().then(ok=>{if(ok && state==='running')gameAudio.tone(440,.22,660)})}
+function steer(dir){if(state!=='running')return;const next=Math.max(0,Math.min(2,lane+dir));if(next!==lane){lane=next;gameAudio.tone(330,.1,490)}}
+function finish(brake=false){if(state!=='running')return;state='over';crashKind=brake?'brake':'traffic';if(brake)obstacles.push({lane,x:playerX,y:playerY()+8,type:'hole'});const score=Math.floor(distance),record=score>best;if(record){best=score;try{localStorage.setItem('rickshaw-best',String(best))}catch(e){}}$('best').textContent=String(best).padStart(4,'0');$('pill').textContent=record?'NEW PERSONAL BEST!':'RIDE OVER';$('hero').textContent=brake?'↓':'×';$('title').innerHTML=brake?'Brake chapla?<br><span>Gorte porla!</span>':'Oof! Dhakka!<br><span>Abar hobe?</span>';$('message').textContent=brake?'Bolsilam brake chepo na! Ebar shudhu left-right.':'Traffic eriye chalao. Arekbar try koro!';$('result').hidden=false;$('result').textContent=String(score).padStart(4,'0')+' POINTS';$('play').textContent='ABAR CHALAO ↗';$('overlay').hidden=false;gameAudio.update();gameAudio.tone(brake?180:110,.55,40)}
+function pause(){if(state==='running'){state='paused';gameAudio.hush();$('pill').textContent='TAKE A BREATHER';$('hero').textContent='Ⅱ';$('title').innerHTML='Ektu break.<br><span>Brake na!</span>';$('message').textContent='Tomar ride ekhanei ache. Ready hole abar chalao.';$('result').hidden=true;$('play').textContent='CONTINUE RIDE ↗';$('overlay').hidden=false;$('pause').textContent='▶';$('pause').setAttribute('aria-label','Resume game')}else if(state==='paused'){state='running';gameAudio.unlock();$('overlay').hidden=true;$('pause').textContent='Ⅱ';$('pause').setAttribute('aria-label','Pause game')}}
 $('play').onclick=()=>state==='paused'?pause():start();$('pause').onclick=pause;
 $('left').addEventListener('pointerdown',e=>{e.preventDefault();steer(-1)});$('right').addEventListener('pointerdown',e=>{e.preventDefault();steer(1)});
 // Keep native button activation available for keyboard and assistive technology.
 $('left').addEventListener('click',e=>{if(e.detail===0)steer(-1)});$('right').addEventListener('click',e=>{if(e.detail===0)steer(1)});$('brake').onclick=()=>finish(true);
-$('sound').onclick=()=>{sound=!sound;$('sound').textContent=sound?'SOUND ON ♫':'SOUND OFF ♩';$('sound').setAttribute('aria-pressed',String(sound));beep(500)};
 window.addEventListener('keydown',e=>{if(e.target instanceof HTMLButtonElement&&(e.key===' '||e.key==='Enter'))return;if(['ArrowLeft','ArrowRight',' ','ArrowUp','ArrowDown'].includes(e.key))e.preventDefault();if(e.key==='ArrowLeft'||e.key.toLowerCase()==='a')steer(-1);if(e.key==='ArrowRight'||e.key.toLowerCase()==='d')steer(1);if(e.key.toLowerCase()==='p'||e.key==='Escape')pause();if(e.key===' '&&!e.repeat)finish(true);if(e.key==='Enter'&&(state==='ready'||state==='over'))start()});
-document.addEventListener('visibilitychange',()=>{if(document.hidden&&state==='running')pause()});
-document.addEventListener('rickshaw-pause',()=>{if(state==='running')pause()});
+function backgroundGame(){if(state==='running')pause();gameAudio.background(true)}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)backgroundGame();else gameAudio.background(false)});
+document.addEventListener('rickshaw-pause',backgroundGame);
+document.addEventListener('rickshaw-resume',()=>gameAudio.background(false));
+window.addEventListener('pagehide',backgroundGame);
+window.addEventListener('pageshow',()=>gameAudio.background(false));
 let touchX=null;$('road').addEventListener('pointerdown',e=>{touchX=e.clientX});$('road').addEventListener('pointerup',e=>{if(touchX!==null&&Math.abs(e.clientX-touchX)>22)steer(e.clientX>touchX?1:-1);touchX=null});$('road').addEventListener('pointercancel',()=>{touchX=null});
 function round(x,y,w,h,r,color){ctx.fillStyle=color;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill()}
 function vehicle(x,y,type){ctx.save();ctx.translate(x,y);if(type==='hole'){ctx.fillStyle='#18211e';ctx.beginPath();ctx.ellipse(0,0,29,17,0,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#778074';ctx.lineWidth=3;ctx.stroke();ctx.fillStyle='#080e0b';ctx.beginPath();ctx.ellipse(2,3,21,10,0,0,Math.PI*2);ctx.fill()}else if(type==='cone'){ctx.fillStyle='#10191455';ctx.beginPath();ctx.ellipse(3,16,20,8,0,0,7);ctx.fill();round(-20,10,40,8,3,'#fdb364');ctx.fillStyle='#ee8851';ctx.beginPath();ctx.moveTo(0,-25);ctx.lineTo(17,13);ctx.lineTo(-17,13);ctx.closePath();ctx.fill();round(-7,-4,14,7,1,'#f3e7c8')}else{const rickshaw=type==='rickshaw';round(-23,-28,50,67,9,'#101a1755');round(-25,-20,6,20,2,'#0b1210');round(19,-20,6,20,2,'#0b1210');round(-25,17,6,20,2,'#0b1210');round(19,17,6,20,2,'#0b1210');if(rickshaw){round(-3,-42,6,20,2,'#0c1710');round(-13,-30,26,5,2,'#bbcbbb');round(-20,-18,40,53,8,'#e6c84e');round(-17,-19,34,30,9,'#75b95c');round(-14,-15,28,20,6,'#315c3b');round(-17,10,34,21,4,'#df6952');round(-12,13,24,4,2,'#ef9a64');round(-15,29,30,4,1,'#f5da75')}else{round(-20,-35,40,72,8,'#b9c6bd');round(-16,-23,32,18,5,'#344f50');round(-16,14,32,13,4,'#344f50');round(-13,-1,26,14,3,'#d1d9cc');round(-17,30,8,4,1,'#ed7957');round(9,30,8,4,1,'#ed7957')}}ctx.restore()}
 function draw(){ctx.fillStyle='#3a4541';ctx.fillRect(0,0,width,height);ctx.fillStyle='#61745b';ctx.fillRect(0,0,width*.045,height);ctx.fillRect(width*.955,0,width*.045,height);for(let y=-40+(roadOffset%44);y<height;y+=44){ctx.fillStyle='#aab28b';ctx.fillRect(width*.05,y,3,23);ctx.fillRect(width*.95-3,y,3,23)}ctx.strokeStyle='#b4b99c66';ctx.lineWidth=3;ctx.setLineDash([24,23]);ctx.lineDashOffset=-roadOffset;for(const x of [width*.35,width*.65]){ctx.beginPath();ctx.moveTo(x,-40);ctx.lineTo(x,height+40);ctx.stroke()}ctx.setLineDash([]);for(const o of obstacles)vehicle(o.x??laneX(o.lane),o.y,o.type);vehicle(playerX,playerY(),'rickshaw');if(crashKind==='brake'){ctx.fillStyle='#0c1510aa';ctx.beginPath();ctx.ellipse(playerX,playerY()+12,26,16,0,0,7);ctx.fill()}}
-function tick(now){const dt=Math.min((now-last)/1000||0,.04);last=now;if(state==='running'){clock+=dt;speed=Math.min(20+clock*.65,85);const velocity=90+speed*2;roadOffset+=velocity*dt;distance+=speed*dt*.3;playerX+=(laneX(lane)-playerX)*Math.min(1,dt*15);spawn-=dt;if(spawn<=0){obstacles.push({lane:Math.floor(Math.random()*3),y:-55,type:['car','hole','cone'][Math.floor(Math.random()*3)]});spawn=Math.max(.65,1.5-clock*.009)+Math.random()*.35}for(const o of obstacles){o.y+=velocity*dt;const dx=Math.abs(laneX(o.lane)-playerX),dy=Math.abs(o.y-playerY());if(dx<33&&dy<(o.type==='car'?52:o.type==='hole'?33:36)){finish(false);break}}obstacles=obstacles.filter(o=>o.y<height+80);updateHUD()}draw();requestAnimationFrame(tick)}
+function tick(now){const dt=Math.min((now-last)/1000||0,.04);last=now;if(state==='running'){clock+=dt;speed=Math.min(20+clock*.65,85);const velocity=90+speed*2;roadOffset+=velocity*dt;distance+=speed*dt*.3;playerX+=(laneX(lane)-playerX)*Math.min(1,dt*15);spawn-=dt;if(spawn<=0){obstacles.push({lane:Math.floor(Math.random()*3),y:-55,type:['car','hole','cone'][Math.floor(Math.random()*3)]});spawn=Math.max(.65,1.5-clock*.009)+Math.random()*.35}for(const o of obstacles){o.y+=velocity*dt;const dx=Math.abs(laneX(o.lane)-playerX),dy=Math.abs(o.y-playerY());if(dx<33&&dy<(o.type==='car'?52:o.type==='hole'?33:36)){finish(false);break}}obstacles=obstacles.filter(o=>o.y<height+80);updateHUD()}gameAudio.update();draw();requestAnimationFrame(tick)}
 requestAnimationFrame(tick);
 })();
 </script>

@@ -20,9 +20,21 @@ Python 3 is required for the development server. The game itself requires no dep
 - **Brake / Space** deliberately ends the run by dropping the rickshaw into a pothole.
 - **P / Escape** or the pause button: pause / resume.
 - Best score stays on the current browser/device, when local storage is available.
-- Sound is optional and off by default. Switching apps pauses the run.
+- Sound is enabled on the first Play tap by default: a continuous ride tone plus steering and crash effects. The sound button mutes/unmutes and remembers your choice. Turn up **media volume**, not ringtone volume. If the browser blocks audio, tap **TAP FOR SOUND** to retry. Switching apps pauses the run and silences audio.
 
-## Android APK bananor niyom
+## Android APK download
+
+Open [GitHub Releases](https://github.com/Ishtiakru/RickshawGame/releases) and choose the **Android test APK** release. Under **Assets**, download **`Rickshaw-Brake-Fail-v1.1.0.apk`**, not the source-code ZIP. If the release is not there yet, check the [Android APK workflow](https://github.com/Ishtiakru/RickshawGame/actions/workflows/android-apk.yml).
+
+On your Android phone, open the APK and allow **Install unknown apps** for your browser/file manager only if you trust this build. Install, then open **Rickshaw Brake Fail** and tap Play. Disable that install permission afterwards if desired. The installed game works offline; turn up media volume for audio. It requires an up-to-date **Android System WebView**.
+
+This is a debug-signed personal-test build, not a Play Store production release. CI caches its debug signing key; if the cache expires, you may need to uninstall an older test APK before installing the new one (this removes your saved best score). The workflow verifies the APK signature and package and publishes a SHA-256 checksum. Physical-device playback still needs a phone test.
+
+### Automated APK build
+
+`.github/workflows/android-apk.yml` runs on pushes to `main` and `arena/**` and can also be run manually. It runs browser/audio tests, verifies asset sync, installs JDK 17 / Android SDK 35, builds and lints the app, verifies the debug signature, and uploads an APK artifact plus a prerelease download. It needs Actions enabled and workflow `contents: write` permission to publish the release. APK binaries/build dependencies are not committed to Git.
+
+## Android APK nijey build korar niyom
 
 **Shudhu Java file paste korlei APK hoy na.** Manifest, Gradle setup, SDK ar game asset-o lage. Ei repo-te puro project `android/` folder-e ache.
 
@@ -40,7 +52,7 @@ Python 3 is required for the development server. The game itself requires no dep
 
 For phone IDEs such as AndroidIDE, import the entire `android/` project, not just `MainActivity.java`. Your IDE must support AGP 8.7.3, Gradle 8.9, JDK 17 and SDK 35; older AIDE templates may not work. Minimum Android version: 6.0. Use an up-to-date Android System WebView (Canvas roundRect support is required).
 
-The debug APK is for personal testing. Play Store distribution needs a signed release and the applicable store requirements. **No compiled APK is included, and the native build has not been verified in this sandbox (no JDK/Android SDK).**
+The debug APK is for personal testing. Play Store distribution needs a signed release and the applicable store requirements. The sandbox has no JDK/Android SDK; the GitHub Actions build is the source of truth for native build/lint results. Compiled APKs are distributed through Releases / Actions, not the source tree.
 
 ### Change the game
 
@@ -60,7 +72,7 @@ npx playwright install --with-deps chromium
 npm test
 ```
 
-Five tests cover score/speed progression, pause/resume, brake failure, high-score persistence, traffic collision, Android pause events, keyboard input and responsive overflow. For a preinstalled Chromium, set `CHROMIUM_PATH` to its executable. Tests passed in the development sandbox using a registry-distributed Chromium with its bundled libraries; native Android behavior still needs device testing.
+Tests cover score/speed progression, pause/resume, brake failure, high-score persistence, traffic collision, Android lifecycle events, keyboard input and responsive overflow. Audio tests measure real Web Audio output amplitude, continuous playback, mute persistence, suspend/resume, silence on pause/background/game over, and unavailable APIs. For a preinstalled Chromium, set `CHROMIUM_PATH` to its executable. Tests passed in the development sandbox using a registry-distributed Chromium with its bundled libraries; native Android behavior still needs device testing.
 
 ## Files
 

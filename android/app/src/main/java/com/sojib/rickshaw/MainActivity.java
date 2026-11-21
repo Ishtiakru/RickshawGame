@@ -2,6 +2,7 @@ package com.sojib.rickshaw;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.media.AudioManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -14,13 +15,15 @@ public class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
         webView = new WebView(this);
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setAllowContentAccess(false);
         settings.setAllowFileAccess(false);
-        settings.setMediaPlaybackRequiresUserGesture(true);
+        // Only trusted, bundled content is loaded; JS still unlocks audio on Play/tap.
+        settings.setMediaPlaybackRequiresUserGesture(false);
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -49,6 +52,7 @@ public class MainActivity extends Activity {
         if (webView != null) {
             webView.onResume();
             webView.resumeTimers();
+            webView.evaluateJavascript("document.dispatchEvent(new Event('rickshaw-resume'))", null);
         }
     }
 
