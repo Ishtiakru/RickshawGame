@@ -75,8 +75,8 @@ jobs:
           disable-animations: true
           emulator-boot-timeout: 600
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          working-directory: android
           script: |
-            cd android
             ./gradlew --no-daemon connectedDebugAndroidTest > /tmp/native-test.log 2>&1 || { cat /tmp/native-test.log; echo "::error::$(tail -c 3500 /tmp/native-test.log | tr '\n' ' ')"; exit 1; }
       - name: Upload Android test reports
         if: always()
