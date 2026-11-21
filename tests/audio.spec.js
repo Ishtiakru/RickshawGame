@@ -1,110 +1,127 @@
 const { test, expect } = require('@playwright/test');
+const { readFileSync } = require('node:fs');
 
-// Capture real audio nodes, not a game-only test hook. Validate an actual audio signal.
+const clip = name => `audio[data-sound="${name}"]`;
+const playing = (page, name) => page.locator(clip(name)).evaluate(a => !a.paused && !a.muted && a.readyState >= 2);
+
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    const NativeAudio = window.AudioContext || window.webkitAudioContext;
-    window.__contexts = [];
-    window.AudioContext = class extends NativeAudio {
-      constructor(...args) {
-        super(...args);
-        this.gains = [];
-        this.motors = [];
-        window.__contexts.push(this);
-      }
-      createGain() { const g = super.createGain(); this.gains.push(g); return g; }
-      createOscillator() { const o = super.createOscillator(); this.motors.push(o); return o; }
-    };
-    Math.random = () => 0;
-  });
+  await page.addInitScript(() => { Math.random = () => 0; });
   await page.goto('/');
 });
 
-async function signal(page) {
-  return page.evaluate(() => {
-    const a = window.__contexts[0];
-    if (!a?.analyser) return 0;
-    const samples = new Float32Array(a.analyser.fftSize);
-    a.analyser.getFloatTimeDomainData(samples);
-    return Math.sqrt(samples.reduce((total, value) => total + value * value, 0) / samples.length);
-  });
-}
+test('embedded WAV clips are real, non-silent PCM and match Android resources', async ({ page }) => {
+  for (const name of ['ride', 'start', 'steer', 'crash', 'test']) {
+    const source = readFileSync(`audio/${name}.wav`);
+    expect(source.equals(readFileSync(`android/app/src/main/res/raw/${name}.wav`))).toBe(true);
+    expect(source.toString('ascii', 0, 4)).toBe('RIFF');
+    const embedded = await page.locator(clip(name)).getAttribute('src');
+    expect(Buffer.from(embedded.split(',')[1], 'base64').equals(source)).toBe(true);
+    // Generated files use a standard 44-byte PCM header.
+    let power = 0;
+    for (let i = 44; i < source.length; i += 2) power += (source.readInt16LE(i) / 32768) ** 2;
+    expect(Math.sqrt(power / ((source.length - 44) / 2))).toBeGreaterThan(.1);
+  }
+});
 
-async function listen(page) {
-  await page.evaluate(() => {
-    const a = window.__contexts[0];
-    a.analyser = a.createAnalyser();
-    a.gains[0].connect(a.analyser);
-  });
-}
-
-test('Play unlocks audible continuous sound; mute persists and restores', async ({ page }) => {
+test('Play starts continuous WAV playback, mute persists and can restore', async ({ page }) => {
   await page.locator('#play').click();
   await expect(page.locator('#sound')).toHaveText('SOUND ON ♫');
-  await listen(page);
-  await expect.poll(() => signal(page)).toBeGreaterThan(.01);
-  // Wait past the start effect: the engine must still generate audio.
-  await page.waitForTimeout(600);
-  expect(await signal(page)).toBeGreaterThan(.01);
+  await expect.poll(() => playing(page, 'ride')).toBe(true);
+  const first = await page.locator(clip('ride')).evaluate(a => a.currentTime);
+  await page.waitForTimeout(300);
+  expect(await page.locator(clip('ride')).evaluate(a => a.currentTime)).not.toBe(first);
   await page.locator('#sound').click();
   await expect(page.locator('#sound')).toHaveText('SOUND OFF ♩');
-  await expect.poll(() => signal(page)).toBeLessThan(.0001);
+  await expect.poll(() => playing(page, 'ride')).toBe(false);
   await page.reload();
   await expect(page.locator('#sound')).toHaveText('SOUND OFF ♩');
   await page.locator('#play').click();
-  expect(await page.evaluate(() => window.__contexts.length)).toBe(0);
+  expect(await playing(page, 'ride')).toBe(false);
   await page.locator('#sound').click();
-  await expect(page.locator('#sound')).toHaveText('SOUND ON ♫');
-  await listen(page);
-  await expect.poll(() => signal(page)).toBeGreaterThan(.01);
+  await expect.poll(() => playing(page, 'ride')).toBe(true);
 });
 
-test('pause, game over and native background silence audio without duplicating engines', async ({ page }) => {
+test('pause, native lifecycle and game over stop ride audio', async ({ page }) => {
   await page.locator('#play').click();
-  await listen(page);
+  await expect.poll(() => playing(page, 'ride')).toBe(true);
   await page.locator('#pause').click();
-  await expect.poll(() => signal(page)).toBeLessThan(.0001);
+  await expect.poll(() => playing(page, 'ride')).toBe(false);
   await page.locator('#play').click();
-  await expect.poll(() => signal(page)).toBeGreaterThan(.01);
-  await page.locator('#brake').click();
-  await expect.poll(() => signal(page)).toBeLessThan(.0001);
-  await page.locator('#play').click();
+  await expect.poll(() => playing(page, 'ride')).toBe(true);
   await page.evaluate(() => document.dispatchEvent(new Event('rickshaw-pause')));
-  await expect.poll(() => signal(page)).toBeLessThan(.0001);
+  await expect.poll(() => playing(page, 'ride')).toBe(false);
   await page.evaluate(() => document.dispatchEvent(new Event('rickshaw-resume')));
   await expect(page.locator('#play')).toHaveText('CONTINUE RIDE ↗');
   await page.locator('#play').click();
-  await expect.poll(() => signal(page)).toBeGreaterThan(.01);
-  expect(await page.evaluate(() => window.__contexts.length)).toBe(1);
-  // Two continuous oscillators only. Effects are stopped/disconnected after their envelope.
-  expect(await page.evaluate(() => window.__contexts[0].motors.length)).toBeLessThan(10);
+  await expect.poll(() => playing(page, 'ride')).toBe(true);
+  await page.locator('#brake').click();
+  await expect.poll(() => playing(page, 'ride')).toBe(false);
+  expect(await page.locator('audio').count()).toBe(5);
 });
 
-test('sound enable before Play gives audible feedback without starting the game', async ({ page }) => {
-  await page.locator('#sound').click();
-  await expect(page.locator('#sound')).toHaveAttribute('aria-pressed', 'true');
+test('TEST SOUND works before Play and while muted, without starting the game', async ({ page }) => {
+  await page.locator('#test-sound').click();
+  await expect(page.locator('#sound')).toHaveText('SOUND ON ♫');
+  await expect.poll(() => playing(page, 'test')).toBe(true);
   await expect(page.locator('#overlay')).toBeVisible();
   await expect(page.locator('#score')).toHaveText('0000');
-  expect(await page.evaluate(() => window.__contexts[0].motors.length)).toBe(3);
-});
-
-test('suspended AudioContext is resumed on next user tap', async ({ page }) => {
-  await page.locator('#play').click();
-  await page.evaluate(() => window.__contexts[0].suspend());
-  await expect(page.locator('#sound')).toHaveText('TAP FOR SOUND ♫');
-  await expect(page.locator('#sound')).toHaveAttribute('aria-pressed', 'false');
   await page.locator('#sound').click();
-  await expect(page.locator('#sound')).toHaveText('SOUND ON ♫');
-  await listen(page);
-  await expect.poll(() => signal(page)).toBeGreaterThan(.01);
+  await expect(page.locator('#sound')).toHaveText('SOUND OFF ♩');
+  await page.locator('#test-sound').click();
+  await expect.poll(() => playing(page, 'test')).toBe(true);
 });
 
-test('missing audio API does not break the game or falsely report sound on', async ({ page }) => {
+test('works without Web Audio and without external audio downloads', async ({ page }) => {
   await page.addInitScript(() => { window.AudioContext = undefined; window.webkitAudioContext = undefined; });
   await page.reload();
   await page.locator('#play').click();
-  await expect(page.locator('#sound')).toHaveText('AUDIO UNAVAILABLE');
-  await expect(page.locator('#overlay')).toBeHidden();
-  await page.locator('#brake').click();
-  await expect(page.locator('#title')).toContainText('Gorte porla!');
+  await expect.poll(() => playing(page, 'ride')).toBe(true);
+  await expect(page.locator('#audio-status')).toContainText('Browser WAV');
+  await expect(page.locator('#audio-status')).toContainText('v1.2.0');
+});
+
+test('denied media playback reports failure and can be retried', async ({ page }) => {
+  await page.addInitScript(() => {
+    const play = HTMLMediaElement.prototype.play;
+    window.__denyAudio = true;
+    HTMLMediaElement.prototype.play = function () {
+      if (window.__denyAudio) return Promise.reject(new DOMException('Playback blocked for test', 'NotAllowedError'));
+      return play.call(this);
+    };
+  });
+  await page.reload();
+  await page.locator('#test-sound').click();
+  await expect(page.locator('#sound')).toHaveText('TAP FOR SOUND ♫');
+  await expect(page.locator('#audio-status')).toContainText('NotAllowedError');
+  await page.evaluate(() => { window.__denyAudio = false; });
+  await page.locator('#test-sound').click();
+  await expect(page.locator('#sound')).toHaveText('SOUND ON ♫');
+});
+
+test('native backend reports zero media volume and handles focus interruption', async ({ page }) => {
+  await page.addInitScript(() => {
+    const s = { ready: true, focused: false, playing: false, volume: 0, maxVolume: 15 };
+    window.__native = s;
+    window.__effects = [];
+    window.RickshawAudio = {
+      configure(enabled, running) { s.focused = enabled; s.playing = enabled && running; },
+      status() { return JSON.stringify(s); },
+      effect(kind) { window.__effects.push(kind); },
+      stopEffects() {}
+    };
+  });
+  await page.reload();
+  expect(await page.locator('audio').count()).toBe(0);
+  await page.locator('#test-sound').click();
+  await expect(page.locator('#sound')).toHaveText('MEDIA VOLUME 0');
+  await expect(page.locator('#audio-status')).toContainText('Android native · media volume 0/15');
+  await page.evaluate(() => { window.__native.volume = 9; });
+  await page.locator('#play').click();
+  await expect(page.locator('#sound')).toHaveText('SOUND ON ♫');
+  await expect.poll(() => page.evaluate(() => window.__native.playing)).toBe(true);
+  await page.evaluate(() => document.dispatchEvent(new Event('rickshaw-audio-interrupted')));
+  await expect(page.locator('#play')).toHaveText('CONTINUE RIDE ↗');
+  await expect.poll(() => page.evaluate(() => window.__native.playing)).toBe(false);
+  await page.locator('#play').click();
+  await expect.poll(() => page.evaluate(() => window.__native.playing)).toBe(true);
 });
