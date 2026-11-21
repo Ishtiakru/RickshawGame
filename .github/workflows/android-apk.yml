@@ -1,0 +1,114 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Browser regression tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm test
+      - name: Check bundled game matches website
+        run: |
+          npm run sync:android
+          git diff --exit-code -- index.html android/app/src/main/assets/index.html android/app/src/main/res/raw
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: |
+          set -o pipefail
+          # GitHub's Ubuntu runner already contains the SDK and accepted licenses.
+          # Use its sdkmanager rather than downloading a second command-line toolchain.
+          if ! "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-35' 'build-tools;35.0.0' 2>&1 | tee /tmp/sdk-setup.log; then
+            echo "::error::$(tail -c 3500 /tmp/sdk-setup.log | tr '\n' ' ')"
+            exit 1
+          fi
+      # Personal-test signing only. Cache avoids changing debug certificates on every build.
+      # Cache eviction can still require uninstalling the previous test app before updating.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: rickshaw-debug-keystore-v1
+      - name: Build installable test APK
+        working-directory: android
+        run: |
+          set -o pipefail
+          if ! ./gradlew --no-daemon assembleDebug lintDebug 2>&1 | tee /tmp/android-build.log; then
+            echo "::error::$(tail -c 3500 /tmp/android-build.log | tr '\n' ' ')"
+            exit 1
+          fi
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Native audio emulator smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          working-directory: android
+          script: |
+            ./gradlew --no-daemon connectedDebugAndroidTest > /tmp/native-test.log 2>&1 || { cat /tmp/native-test.log; echo "::error::$(tail -c 3500 /tmp/native-test.log | tr '\n' ' ')"; exit 1; }
+      - name: Upload Android test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+      - name: Verify APK signature and package
+        run: |
+          mkdir -p apk-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/Rickshaw-Brake-Fail-v1.2.0.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs apk-output/*.apk
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging apk-output/*.apk
+          cd apk-output
+          sha256sum *.apk > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rickshaw-Brake-Fail-v1.2.0
+          path: apk-output/*
+          if-no-files-found: error
+      - name: Publish APK download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-v1.2.0-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" apk-output/* \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title 'Rickshaw Brake Fail 1.2.0 — Android test APK' \
+            --notes 'Download Rickshaw-Brake-Fail-v1.2.0.apk under Assets. Offline game with native Android audio, a TEST SOUND button and audio diagnostics. Browser playback uses embedded WAV clips instead of Web Audio. Android 6+ with an up-to-date Android System WebView. Enable sound using Play or the sound button and turn up media volume. Debug-signed personal-test build, not a Play Store release; not yet device-tested. If an older test APK refuses to update, uninstall it first (local best score will be lost). Source commit: '"$GITHUB_SHA"
+          echo "### APK download" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
