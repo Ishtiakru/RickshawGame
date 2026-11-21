@@ -1,0 +1,11 @@
+{
+  "name": "rickshaw-brake-fail",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "python3 -m http.server 3000 --bind 0.0.0.0",
+    "sync:android": "node scripts/sync-android.mjs",
+    "test": "playwright test"
+  },
+  "devDependencies": {"@playwright/test": "^1.56.1"}
+}

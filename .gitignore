@@ -1,0 +1,11 @@
+node_modules/
+test-results/
+playwright-report/
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+.idea/
+
+.cache/
